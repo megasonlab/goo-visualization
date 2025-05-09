@@ -10,7 +10,7 @@ An interactive visualization dashboard for Goo simulation data, built with Dash 
 Install directly from GitHub:
 
 ```bash
-pip install -e git+https://github.com/yourusername/gooviz.git
+pip install -e git+https://github.com/megasonlab/gooviz.git
 ```
 
 ## Usage
