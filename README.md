@@ -1,4 +1,4 @@
-# Goo Visualization Dashboard
+# Goo visualization dashboard
 
 An interactive visualization dashboard for Goo simulation data, built with Dash and Plotly.
 
