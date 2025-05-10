@@ -52,81 +52,97 @@ class GooDataLoader:
         logger.warning(f"Found {len(frames)} frames")
         return frames
             
-    def get_frame_data(self, frame_name: str) -> pd.DataFrame:
-        """Load data for a specific frame into a pandas DataFrame.
+    def get_frame_data(self, frame: str) -> pd.DataFrame:
+        """Get cell data for a specific frame.
         
         Args:
-            frame_name: Name of the frame to load (e.g., 'frame_001')
+            frame: Frame identifier
             
         Returns:
-            DataFrame containing cell data for the specified frame
+            DataFrame containing cell data
         """
-        if self._file is None:
-            raise RuntimeError("DataLoader must be used as a context manager")
-            
+        logger.warning(f"Loading data for frame {frame}")
+        
         try:
-            frame_group = self._file[frame_name]
-            cells_group = frame_group["cells"]
-            # logger.warning(f"Loading data for frame {frame_name} with {len(cells_group)} cells")
+            frame_group = self._file[frame]
+            cells_group = frame_group['cells']
             
-            # Initialize data collection
-            data = {
-                "cell_id": [],
-                "name": [],
-                "x": [], "y": [], "z": [],
-                "volume": [],
-                "pressure": []
-            }
+            # Initialize lists to store data
+            names = []
+            locations = []
+            division_frames = []
+            volumes = []
+            pressures = []
+            sphericities = []
+            aspect_ratios = []
             gene_concs = defaultdict(list)
-            mol_concs = defaultdict(list)
             
-            # Process each cell
-            for cell_id, cell_group in cells_group.items():
-                # Basic properties
-                data["cell_id"].append(cell_id)
-                cell_name = cell_group.attrs["name"]
-                data["name"].append(cell_name)
-                loc = cell_group["loc"][:]
-                data["x"].append(loc[0])
-                data["y"].append(loc[1])
-                data["z"].append(loc[2])
-                data["volume"].append(cell_group["volume"][()])
+            # Iterate through each cell
+            for cell_name in cells_group.keys():
+                cell_group = cells_group[cell_name]
                 try:
-                    data["pressure"].append(cell_group["pressure"][()])
-                except KeyError:
-                    data["pressure"].append(np.nan)
-                    
-                # Gene and molecule concentrations
-                # print(f"\nProcessing cell {cell_name}:")
+                    # Get basic properties
+                    names.append(cell_group.attrs['name'])
+                    locations.append(cell_group['loc'][:])
+                    volumes.append(cell_group['volume'][()])
+                except Exception as e:
+                    logger.error(f"Error loading basic properties for cell {cell_name} in frame {frame}: {e}")
+                    continue
+                # Try to get optional shape features
+                try:
+                    division_frames.append(cell_group['division_frame'][()])
+                except Exception:
+                    division_frames.append(np.nan)
+                try:
+                    sphericities.append(cell_group['sphericity'][()])
+                except Exception:
+                    sphericities.append(np.nan)
+                try:
+                    aspect_ratios.append(cell_group['aspect_ratio'][()])
+                except Exception:
+                    aspect_ratios.append(np.nan)
+                try:
+                    pressures.append(cell_group['pressure'][()])
+                except Exception:
+                    pressures.append(np.nan)
+                # Get gene concentrations
                 for key in cell_group.keys():
-                    if key.startswith("gene_") and key.endswith("_conc"):
-                        gene_name = key[5:-5]
-                        gene_value = cell_group[key][()]
-                        gene_concs[gene_name].append(gene_value)
-                        # print(f"  Gene {gene_name}: {gene_value}")
-                    elif key.startswith("mol_") and key.endswith("_conc"):
-                        mol_name = key[4:-5]
-                        mol_concs[mol_name].append(cell_group[key][()])
+                    if key.startswith('gene_') and key.endswith('_conc'):
+                        gene_name = key[5:-5]  # remove 'gene_' and '_conc'
+                        try:
+                            gene_concs[gene_name].append(cell_group[key][()])
+                        except Exception:
+                            gene_concs[gene_name].append(np.nan)
             
-            # Create DataFrame
-            df = pd.DataFrame(data)
+            # If no cells, return empty DataFrame
+            if not names:
+                return pd.DataFrame()
             
-            # Add gene and molecule concentrations
-            # print("\nAdding gene columns to DataFrame:")
+            # Create the base DataFrame
+            df = pd.DataFrame({
+                'name': names,
+                'x': [loc[0] for loc in locations],
+                'y': [loc[1] for loc in locations],
+                'z': [loc[2] for loc in locations],
+                'volume': volumes,
+                'pressure': pressures,
+                'division_frame': division_frames,
+                'sphericity': sphericities,
+                'aspect_ratio': aspect_ratios
+            })
+            
+            # Add gene concentrations
             for gene_name, concs in gene_concs.items():
-                if len(concs) == len(df):  # Only add if lengths match
-                    df[f"gene_{gene_name}"] = concs
-                    # print(f"  Added gene {gene_name} with {len(concs)} values")
-            for mol_name, concs in mol_concs.items():
-                if len(concs) == len(df):  # Only add if lengths match
-                    df[f"{mol_name}_conc"] = concs
-                
-            # logger.warning(f"Successfully loaded frame data with {len(df)} cells")
+                # Pad with np.nan if some cells are missing this gene
+                while len(concs) < len(names):
+                    concs.append(np.nan)
+                df[f'gene_{gene_name}'] = concs
+            
             return df
             
         except Exception as e:
-            logger.error(f"Error loading frame {frame_name}: {e}")
-            raise
+            logger.error(f"Error loading frame {frame}: {e}")
+            return pd.DataFrame()  # Return empty DataFrame on error
 
     def get_concentration_grid(self, frame_name: str, molecule: str) -> Tuple[np.ndarray, Dict[str, Any]]:
         """Get concentration grid data for a specific molecule.

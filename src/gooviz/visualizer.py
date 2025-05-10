@@ -38,17 +38,19 @@ class GooVisualizer:
         # Initialize with extreme values
         ranges = {
             'volume': {'min': float('inf'), 'max': float('-inf')},
-            'pressure': {'min': float('inf'), 'max': float('-inf')}
+            'pressure': {'min': float('inf'), 'max': float('-inf')},
+            'sphericity': {'min': float('inf'), 'max': float('-inf')},
+            'aspect_ratio': {'min': float('inf'), 'max': float('-inf')},
+            'division_frame': {'min': float('inf'), 'max': float('-inf')}
         }
         
         for frame in frames:
             df = self.data_loader.get_frame_data(frame)
-            # Update volume ranges
-            ranges['volume']['min'] = min(ranges['volume']['min'], df['volume'].min())
-            ranges['volume']['max'] = max(ranges['volume']['max'], df['volume'].max())
-            # Update pressure ranges
-            ranges['pressure']['min'] = min(ranges['pressure']['min'], df['pressure'].min())
-            ranges['pressure']['max'] = max(ranges['pressure']['max'], df['pressure'].max())
+            # Update ranges for each feature
+            for feature in ranges.keys():
+                if feature in df.columns:
+                    ranges[feature]['min'] = min(ranges[feature]['min'], df[feature].min())
+                    ranges[feature]['max'] = max(ranges[feature]['max'], df[feature].max())
             
         self.global_ranges = ranges
         logger.warning(f"Global ranges calculated: {self.global_ranges}")
@@ -208,15 +210,27 @@ class GooVisualizer:
                 title='Number of Cells Over Time',
                 xaxis_title='Frame Number',
                 yaxis_title='Number of Cells',
-                showlegend=False
+                showlegend=False,
+                height=400,  # Set consistent height
+                margin=dict(l=50, r=20, t=50, b=50),  # Add margin for axis labels
+                xaxis=dict(
+                    range=[0, len(frames)],
+                    showgrid=True,
+                    gridcolor='lightgray'
+                ),
+                yaxis=dict(
+                    range=[0, max(cell_counts) * 1.1],  # Add 10% padding
+                    showgrid=True,
+                    gridcolor='lightgray'
+                )
             )
             
             return fig
             
         except Exception as e:
             logger.error(f"Error creating cell count plot: {e}")
-            return go.Figure()  # Return empty figure on error
-        
+            return go.Figure()
+
     def _create_concentration_heatmap(self, values: np.ndarray, metadata: Dict[str, Any], molecule: str) -> go.Figure:
         """Create an interactive heatmap of concentration data.
         
@@ -263,7 +277,25 @@ class GooVisualizer:
         gene_cols = [col for col in df.columns if col.startswith('gene_')]
         if not gene_cols:
             print("WARNING: No gene columns found in the data")
-            return go.Figure()  # Return empty figure if no gene data
+            # Create a figure with a message
+            fig = go.Figure()
+            fig.add_annotation(
+                text="Gene data not available",
+                xref="paper",
+                yref="paper",
+                x=0.5,
+                y=0.5,
+                showarrow=False,
+                font=dict(size=20)
+            )
+            fig.update_layout(
+                title='Gene Expression Levels Over Time',
+                xaxis_title='Frame Number',
+                yaxis_title='Expression Level',
+                showlegend=True,
+                height=600
+            )
+            return fig
             
         print(f"\nFound {len(gene_cols)} gene columns: {gene_cols}")
         print(f"Sample gene data for first cell:")
@@ -276,6 +308,7 @@ class GooVisualizer:
         
         # Dictionary to store gene data for each cell across frames
         cell_gene_data = {}
+        cell_division_frames = {}
         
         print("\nCollecting gene data across frames:")
         for i, frame in enumerate(frames):
@@ -288,6 +321,7 @@ class GooVisualizer:
                     cell_name = row['name']
                     if cell_name not in cell_gene_data:
                         cell_gene_data[cell_name] = {gene: [] for gene in gene_cols}
+                        cell_division_frames[cell_name] = row['division_frame']
                     # Add gene values for this cell
                     for gene in gene_cols:
                         cell_gene_data[cell_name][gene].append(row[gene])
@@ -301,13 +335,18 @@ class GooVisualizer:
         for cell_name in cells_to_plot:
             if cell_name in cell_gene_data:
                 gene_values = cell_gene_data[cell_name]
+                division_frame = cell_division_frames[cell_name]
+                
                 # Add a line for each gene
                 for gene in gene_cols:
                     gene_name = gene[5:]  # Remove 'gene_' prefix
                     values = gene_values[gene]
                     
+                    # Create x-axis values starting from division frame
+                    x_values = list(range(division_frame, division_frame + len(values)))
+                    
                     fig.add_trace(go.Scatter(
-                        x=list(range(len(values))),
+                        x=x_values,
                         y=values,
                         name=f"{gene_name}",
                         mode='lines',
@@ -341,6 +380,106 @@ class GooVisualizer:
         print("\n=== Finished creating gene expression plot ===")
         return fig
         
+    def _create_volume_plot(self, current_frame_idx: int = 0) -> go.Figure:
+        """Create a plot showing cell volumes over time, starting from their division frames.
+        
+        Args:
+            current_frame_idx: Index of the currently selected frame
+            
+        Returns:
+            Plotly figure object
+        """
+        try:
+            frames = self.data_loader.get_available_frames()
+            cell_volumes = {}  # Dictionary to store volume data for each cell
+            max_volume = 0  # Track maximum volume for y-axis range
+            
+            # First pass: collect division frames and initial volumes
+            for frame in frames:
+                df = self.data_loader.get_frame_data(frame)
+                for _, row in df.iterrows():
+                    cell_name = row['name']
+                    if cell_name not in cell_volumes:
+                        cell_volumes[cell_name] = {
+                            'division_frame': row['division_frame'],
+                            'volumes': []
+                        }
+                    max_volume = max(max_volume, row['volume'])
+            
+            # Second pass: collect volume data for each cell
+            for frame in frames:
+                df = self.data_loader.get_frame_data(frame)
+                for cell_name in cell_volumes:
+                    cell_data = df[df['name'] == cell_name]
+                    if not cell_data.empty:
+                        cell_volumes[cell_name]['volumes'].append(cell_data['volume'].iloc[0])
+                    else:
+                        cell_volumes[cell_name]['volumes'].append(None)
+            
+            # Create the plot
+            fig = go.Figure()
+            
+            # Add a line for each cell
+            for cell_name, data in cell_volumes.items():
+                # If division frame is NaN, start from frame 0
+                start_frame = 0 if np.isnan(data['division_frame']) else int(data['division_frame'])
+                
+                # Find the last frame with valid volume data
+                valid_volumes = [(i, v) for i, v in enumerate(data['volumes']) if v is not None]
+                if not valid_volumes:
+                    continue
+                    
+                # Get the range of frames with valid data
+                start_idx = valid_volumes[0][0]
+                end_idx = valid_volumes[-1][0] + 1
+                
+                # Create x-axis values and get corresponding volumes
+                x_values = list(range(start_idx, end_idx))  # Use frame indices directly
+                volumes = [data['volumes'][i] for i in range(start_idx, end_idx)]
+                
+                fig.add_trace(go.Scatter(
+                    x=x_values,
+                    y=volumes,
+                    mode='lines',
+                    line=dict(width=2, color='rgba(0, 0, 255, 0.3)'),  # Semi-transparent blue
+                    name=cell_name,  # Keep cell name in trace
+                    showlegend=False  # Hide from legend
+                ))
+            
+            # Add vertical line for current frame
+            fig.add_vline(
+                x=current_frame_idx,
+                line_dash="dash",
+                line_color="red",
+                opacity=0.5
+            )
+            
+            # Update layout with proper axis ranges and labels
+            fig.update_layout(
+                title='Cell Volumes Over Time',
+                xaxis_title='Frame Number',
+                yaxis_title='Volume',
+                showlegend=False,  # Hide the legend
+                height=400,  # Set consistent height
+                margin=dict(l=50, r=20, t=50, b=50),  # Add margin for axis labels
+                xaxis=dict(
+                    range=[0, len(frames)],
+                    showgrid=True,
+                    gridcolor='lightgray'
+                ),
+                yaxis=dict(
+                    range=[0, max_volume * 1.1],  # Add 10% padding to max volume
+                    showgrid=True,
+                    gridcolor='lightgray'
+                )
+            )
+            
+            return fig
+            
+        except Exception as e:
+            logger.error(f"Error creating volume plot: {e}")
+            return go.Figure()
+
     def _setup_dashboard(self):
         """Set up the interactive dashboard layout and callbacks."""
         # Get initial frames
@@ -423,7 +562,10 @@ class GooVisualizer:
                                 id='color-dropdown',
                                 options=[
                                     {'label': 'Volume', 'value': 'volume'},
-                                    {'label': 'Pressure', 'value': 'pressure'}
+                                    {'label': 'Pressure', 'value': 'pressure'},
+                                    {'label': 'Sphericity', 'value': 'sphericity'},
+                                    {'label': 'Aspect Ratio', 'value': 'aspect_ratio'},
+                                    {'label': 'Division Frame', 'value': 'division_frame'}
                                 ],
                                 value='volume',
                                 style={'marginBottom': '15px'}
@@ -436,7 +578,10 @@ class GooVisualizer:
                                 id='size-dropdown',
                                 options=[
                                     {'label': 'Volume', 'value': 'volume'},
-                                    {'label': 'Pressure', 'value': 'pressure'}
+                                    {'label': 'Pressure', 'value': 'pressure'},
+                                    {'label': 'Sphericity', 'value': 'sphericity'},
+                                    {'label': 'Aspect Ratio', 'value': 'aspect_ratio'},
+                                    {'label': 'Division Frame', 'value': 'division_frame'}
                                 ],
                                 value='volume',
                                 style={'marginBottom': '15px'}
@@ -502,15 +647,15 @@ class GooVisualizer:
                             )
                         ], style={'width': '50%', 'padding': '10px'}),
                         
-                        # Concentration heatmap
+                        # Volume plot
                         html.Div([
                             dcc.Graph(
-                                id='concentration-heatmap',
+                                id='volume-plot',
                                 style={'height': '40vh'},
                                 config={'displayModeBar': True}
                             )
                         ], style={'width': '50%', 'padding': '10px'})
-                    ], style={'display': 'flex', 'marginBottom': '20px'}),
+                    ], style={'display': 'flex', 'marginBottom': '40px'}),  # Increased bottom margin
                     
                     # Gene expression plot with cell selection
                     html.Div([
@@ -524,7 +669,7 @@ class GooVisualizer:
                                 value=cell_options[0]['value'] if cell_options else None,
                                 style={'marginBottom': '15px', 'width': '100%'}
                             )
-                        ], style={'width': '300px', 'marginBottom': '10px'}),
+                        ], style={'width': '300px', 'marginBottom': '20px'}),  # Increased bottom margin
                         dcc.Graph(
                             id='gene-heatmap',
                             style={'height': '40vh'},
@@ -532,9 +677,10 @@ class GooVisualizer:
                         )
                     ], style={
                         'backgroundColor': 'white',
-                        'padding': '20px',
+                        'padding': '30px',  # Increased padding
                         'borderRadius': '10px',
-                        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'
+                        'boxShadow': '0 2px 4px rgba(0,0,0,0.1)',
+                        'marginTop': '20px'  # Added top margin
                     })
                 ], style={
                     'width': '75%',
@@ -561,7 +707,6 @@ class GooVisualizer:
             frame = initial_frames[slider_value]
             logger.info(f"Updating cell scatter for frame {frame} in {view_mode} mode")
             df = self.data_loader.get_frame_data(frame)
-            
             if view_mode == '3d':
                 return self._create_cell_scatter_3d(df, color_by, size_by)
             else:
@@ -603,6 +748,16 @@ class GooVisualizer:
             logger.info(f"Updating gene heatmap for frame {frame}, cell {selected_cell}")
             df = self.data_loader.get_frame_data(frame)
             return self._create_gene_heatmap(df, slider_value, selected_cell)
+            
+        @self.app.callback(
+            Output('volume-plot', 'figure'),
+            Input('frame-slider', 'value')
+        )
+        def update_volume_plot(slider_value):
+            if slider_value is None:
+                return go.Figure()
+            logger.info("Updating volume plot")
+            return self._create_volume_plot(slider_value)
             
     def run_server(self, debug: bool = True, port: int = 8050):
         """Run the dashboard server.
