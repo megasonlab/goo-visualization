@@ -9,7 +9,7 @@ from pathlib import Path
 import logging
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)  # Change to WARNING to reduce info messages
 logger = logging.getLogger(__name__)
 
 class GooDataLoader:
@@ -23,12 +23,12 @@ class GooDataLoader:
         """
         self.filepath = Path(filepath)
         self._file = None
-        logger.info(f"Initializing GooDataLoader with file: {filepath}")
+        logger.warning(f"Initializing GooDataLoader with file: {filepath}")
         
     def __enter__(self):
         try:
             self._file = h5py.File(self.filepath, 'r')
-            logger.info(f"Successfully opened HDF5 file: {self.filepath}")
+            logger.warning(f"Successfully opened HDF5 file: {self.filepath}")
             return self
         except Exception as e:
             logger.error(f"Failed to open HDF5 file: {e}")
@@ -38,7 +38,7 @@ class GooDataLoader:
         if self._file is not None:
             self._file.close()
             self._file = None
-            logger.info("Closed HDF5 file")
+            logger.warning("Closed HDF5 file")
             
     def get_available_frames(self) -> List[str]:
         """Get list of available frames in the dataset.
@@ -49,7 +49,7 @@ class GooDataLoader:
         if self._file is None:
             raise RuntimeError("DataLoader must be used as a context manager")
         frames = sorted(list(self._file.keys()))
-        logger.info(f"Found {len(frames)} frames: {frames}")
+        logger.warning(f"Found {len(frames)} frames")
         return frames
             
     def get_frame_data(self, frame_name: str) -> pd.DataFrame:
@@ -67,7 +67,7 @@ class GooDataLoader:
         try:
             frame_group = self._file[frame_name]
             cells_group = frame_group["cells"]
-            logger.info(f"Loading data for frame {frame_name} with {len(cells_group)} cells")
+            # logger.warning(f"Loading data for frame {frame_name} with {len(cells_group)} cells")
             
             # Initialize data collection
             data = {
@@ -85,7 +85,6 @@ class GooDataLoader:
                 # Basic properties
                 data["cell_id"].append(cell_id)
                 cell_name = cell_group.attrs["name"]
-                logger.info(f"Loading cell {cell_id} with name: {cell_name}")
                 data["name"].append(cell_name)
                 loc = cell_group["loc"][:]
                 data["x"].append(loc[0])
@@ -98,10 +97,13 @@ class GooDataLoader:
                     data["pressure"].append(np.nan)
                     
                 # Gene and molecule concentrations
+                # print(f"\nProcessing cell {cell_name}:")
                 for key in cell_group.keys():
                     if key.startswith("gene_") and key.endswith("_conc"):
                         gene_name = key[5:-5]
-                        gene_concs[gene_name].append(cell_group[key][()])
+                        gene_value = cell_group[key][()]
+                        gene_concs[gene_name].append(gene_value)
+                        # print(f"  Gene {gene_name}: {gene_value}")
                     elif key.startswith("mol_") and key.endswith("_conc"):
                         mol_name = key[4:-5]
                         mol_concs[mol_name].append(cell_group[key][()])
@@ -110,14 +112,16 @@ class GooDataLoader:
             df = pd.DataFrame(data)
             
             # Add gene and molecule concentrations
+            # print("\nAdding gene columns to DataFrame:")
             for gene_name, concs in gene_concs.items():
                 if len(concs) == len(df):  # Only add if lengths match
                     df[f"gene_{gene_name}"] = concs
+                    # print(f"  Added gene {gene_name} with {len(concs)} values")
             for mol_name, concs in mol_concs.items():
                 if len(concs) == len(df):  # Only add if lengths match
                     df[f"{mol_name}_conc"] = concs
                 
-            logger.info(f"Successfully loaded frame data with {len(df)} cells")
+            # logger.warning(f"Successfully loaded frame data with {len(df)} cells")
             return df
             
         except Exception as e:

@@ -10,7 +10,7 @@ from typing import List, Optional, Dict, Any
 from .data_loader import GooDataLoader
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)  # Change to WARNING to reduce info messages
 logger = logging.getLogger(__name__)
 
 class GooVisualizer:
@@ -32,7 +32,7 @@ class GooVisualizer:
         
     def _calculate_global_ranges(self):
         """Calculate maximum values and coordinate ranges across all frames for consistent scaling."""
-        logger.info("Calculating global ranges across all frames...")
+        logger.warning("Calculating global ranges across all frames...")
         frames = self.data_loader.get_available_frames()
         
         # Initialize with extreme values
@@ -51,7 +51,7 @@ class GooVisualizer:
             ranges['pressure']['max'] = max(ranges['pressure']['max'], df['pressure'].max())
             
         self.global_ranges = ranges
-        logger.info(f"Global ranges calculated: {self.global_ranges}")
+        logger.warning(f"Global ranges calculated: {self.global_ranges}")
         
     def _create_cell_scatter_2d(self, df: pd.DataFrame, color_by: str, size_by: str) -> go.Figure:
         """Create a 2D interactive scatter plot of cell positions."""
@@ -244,34 +244,101 @@ class GooVisualizer:
         
         return fig
         
-    def _create_gene_heatmap(self, df: pd.DataFrame) -> go.Figure:
-        """Create an interactive heatmap of gene expression data.
+    def _create_gene_heatmap(self, df: pd.DataFrame, frame_idx: int, selected_cell: str = None) -> go.Figure:
+        """Create an interactive line plot of gene expression data over time.
         
         Args:
             df: DataFrame containing cell data
+            frame_idx: Current frame index
+            selected_cell: Name of the cell to display (if None, show all cells)
             
         Returns:
             Plotly figure object
         """
+        print("\n=== Starting gene expression plot creation ===")
+        print(f"Input DataFrame shape: {df.shape}")
+        print(f"Input DataFrame columns: {df.columns.tolist()}")
+        
+        # Get gene columns - looking for columns that start with 'gene_'
         gene_cols = [col for col in df.columns if col.startswith('gene_')]
-        logger.info(f"Creating gene heatmap with {len(gene_cols)} genes and {len(df)} cells")
-        gene_data = df[gene_cols].T
+        if not gene_cols:
+            print("WARNING: No gene columns found in the data")
+            return go.Figure()  # Return empty figure if no gene data
+            
+        print(f"\nFound {len(gene_cols)} gene columns: {gene_cols}")
+        print(f"Sample gene data for first cell:")
+        for gene in gene_cols:
+            print(f"  {gene}: {df[gene].iloc[0]}")
         
-        fig = go.Figure(data=go.Heatmap(
-            z=gene_data.values,
-            x=df['cell_id'],
-            y=[col[5:] for col in gene_cols],  # Remove 'gene_' prefix
-            colorscale='Viridis',
-            colorbar=dict(title='Expression Level')
-        ))
+        # Collect gene expression data across frames
+        frames = self.data_loader.get_available_frames()
+        print(f"\nTotal number of frames: {len(frames)}")
         
-        fig.update_layout(
-            title='Gene Expression Patterns',
-            xaxis_title='Cell ID',
-            yaxis_title='Gene',
-            showlegend=False
+        # Dictionary to store gene data for each cell across frames
+        cell_gene_data = {}
+        
+        print("\nCollecting gene data across frames:")
+        for i, frame in enumerate(frames):
+            if i % 50 == 0:  # Print progress every 50 frames
+                print(f"Processing frame {i}/{len(frames)}")
+            frame_df = self.data_loader.get_frame_data(frame)
+            if not frame_df.empty:
+                # For each cell in this frame
+                for _, row in frame_df.iterrows():
+                    cell_name = row['name']
+                    if cell_name not in cell_gene_data:
+                        cell_gene_data[cell_name] = {gene: [] for gene in gene_cols}
+                    # Add gene values for this cell
+                    for gene in gene_cols:
+                        cell_gene_data[cell_name][gene].append(row[gene])
+        
+        # Create figure
+        fig = go.Figure()
+        
+        # Add line plot for each cell's gene expression
+        print("\nAdding traces to plot:")
+        cells_to_plot = [selected_cell] if selected_cell else cell_gene_data.keys()
+        for cell_name in cells_to_plot:
+            if cell_name in cell_gene_data:
+                gene_values = cell_gene_data[cell_name]
+                # Add a line for each gene
+                for gene in gene_cols:
+                    gene_name = gene[5:]  # Remove 'gene_' prefix
+                    values = gene_values[gene]
+                    
+                    fig.add_trace(go.Scatter(
+                        x=list(range(len(values))),
+                        y=values,
+                        name=f"{gene_name}",
+                        mode='lines',
+                        line=dict(width=2),
+                        showlegend=True
+                    ))
+        
+        # Add vertical line for current frame
+        fig.add_vline(
+            x=frame_idx,
+            line_dash="dash",
+            line_color="red",
+            opacity=0.5
         )
         
+        fig.update_layout(
+            title=f'Gene Expression Levels Over Time{" for " + selected_cell if selected_cell else ""}',
+            xaxis_title='Frame Number',
+            yaxis_title='Expression Level',
+            showlegend=True,
+            height=600,  # Make the plot taller
+            legend=dict(
+                groupclick="toggleitem",
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=1.05
+            )
+        )
+        
+        print("\n=== Finished creating gene expression plot ===")
         return fig
         
     def _setup_dashboard(self):
@@ -280,6 +347,14 @@ class GooVisualizer:
         initial_frames = self.data_loader.get_available_frames()
         initial_options = [{'label': frame, 'value': frame} for frame in initial_frames]
         initial_value = initial_frames[0] if initial_frames else None
+        
+        # Get all unique cell names across all frames
+        all_cells = set()
+        for frame in initial_frames:
+            df = self.data_loader.get_frame_data(frame)
+            all_cells.update(df['name'].unique())
+        cell_options = [{'label': name, 'value': name} for name in sorted(all_cells)]
+        print(f"Found {len(cell_options)} unique cells for dropdown")
         
         # Define modern color scheme
         colors = {
@@ -437,8 +512,19 @@ class GooVisualizer:
                         ], style={'width': '50%', 'padding': '10px'})
                     ], style={'display': 'flex', 'marginBottom': '20px'}),
                     
-                    # Gene heatmap
+                    # Gene expression plot with cell selection
                     html.Div([
+                        html.Div([
+                            html.Label('Select Cell:', 
+                                style={'fontWeight': 'bold', 'marginBottom': '5px', 'display': 'block'}
+                            ),
+                            dcc.Dropdown(
+                                id='cell-select-dropdown',
+                                options=cell_options,
+                                value=cell_options[0]['value'] if cell_options else None,
+                                style={'marginBottom': '15px', 'width': '100%'}
+                            )
+                        ], style={'width': '300px', 'marginBottom': '10px'}),
                         dcc.Graph(
                             id='gene-heatmap',
                             style={'height': '40vh'},
@@ -507,15 +593,16 @@ class GooVisualizer:
             
         @self.app.callback(
             Output('gene-heatmap', 'figure'),
-            Input('frame-slider', 'value')
+            [Input('frame-slider', 'value'),
+             Input('cell-select-dropdown', 'value')]
         )
-        def update_gene_heatmap(slider_value):
-            if slider_value is None:
+        def update_gene_heatmap(slider_value, selected_cell):
+            if slider_value is None or selected_cell is None:
                 return go.Figure()
             frame = initial_frames[slider_value]
-            logger.info(f"Updating gene heatmap for frame {frame}")
+            logger.info(f"Updating gene heatmap for frame {frame}, cell {selected_cell}")
             df = self.data_loader.get_frame_data(frame)
-            return self._create_gene_heatmap(df)
+            return self._create_gene_heatmap(df, slider_value, selected_cell)
             
     def run_server(self, debug: bool = True, port: int = 8050):
         """Run the dashboard server.
