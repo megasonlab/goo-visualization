@@ -264,7 +264,7 @@ class GooVisualizer:
         Args:
             df: DataFrame containing cell data
             frame_idx: Current frame index
-            selected_cell: Name of the cell to display (if None, show all cells)
+            selected_cell: Name of the cell to display ('all' for all cells)
             
         Returns:
             Plotly figure object
@@ -324,14 +324,17 @@ class GooVisualizer:
                         cell_division_frames[cell_name] = row['division_frame']
                     # Add gene values for this cell
                     for gene in gene_cols:
-                        cell_gene_data[cell_name][gene].append(row[gene])
+                        if gene in row:  # Check if gene exists in the row
+                            cell_gene_data[cell_name][gene].append(row[gene])
+                        else:
+                            cell_gene_data[cell_name][gene].append(None)
         
         # Create figure
         fig = go.Figure()
         
         # Add line plot for each cell's gene expression
         print("\nAdding traces to plot:")
-        cells_to_plot = [selected_cell] if selected_cell else cell_gene_data.keys()
+        cells_to_plot = cell_gene_data.keys() if selected_cell == 'all' else [selected_cell]
         for cell_name in cells_to_plot:
             if cell_name in cell_gene_data:
                 gene_values = cell_gene_data[cell_name]
@@ -342,13 +345,22 @@ class GooVisualizer:
                     gene_name = gene[5:]  # Remove 'gene_' prefix
                     values = gene_values[gene]
                     
+                    # Filter out None values
+                    valid_indices = [i for i, v in enumerate(values) if v is not None]
+                    if not valid_indices:
+                        continue
+                        
                     # Create x-axis values starting from division frame
-                    x_values = list(range(division_frame, division_frame + len(values)))
+                    x_values = [division_frame + i for i in valid_indices]
+                    y_values = [values[i] for i in valid_indices]
+                    
+                    # Create a unique name for each trace that includes both cell and gene
+                    trace_name = f"{cell_name} - {gene_name}"
                     
                     fig.add_trace(go.Scatter(
                         x=x_values,
-                        y=values,
-                        name=f"{gene_name}",
+                        y=y_values,
+                        name=trace_name,
                         mode='lines',
                         line=dict(width=2),
                         showlegend=True
@@ -363,7 +375,7 @@ class GooVisualizer:
         )
         
         fig.update_layout(
-            title=f'Gene Expression Levels Over Time{" for " + selected_cell if selected_cell else ""}',
+            title=f'Gene Expression Levels Over Time{" for " + selected_cell if selected_cell != "all" else ""}',
             xaxis_title='Frame Number',
             yaxis_title='Expression Level',
             showlegend=True,
@@ -492,7 +504,7 @@ class GooVisualizer:
         for frame in initial_frames:
             df = self.data_loader.get_frame_data(frame)
             all_cells.update(df['name'].unique())
-        cell_options = [{'label': name, 'value': name} for name in sorted(all_cells)]
+        cell_options = [{'label': 'All Cells', 'value': 'all'}] + [{'label': name, 'value': name} for name in sorted(all_cells)]
         print(f"Found {len(cell_options)} unique cells for dropdown")
         
         # Define modern color scheme
@@ -666,7 +678,7 @@ class GooVisualizer:
                             dcc.Dropdown(
                                 id='cell-select-dropdown',
                                 options=cell_options,
-                                value=cell_options[0]['value'] if cell_options else None,
+                                value='all',  # Default to 'All Cells'
                                 style={'marginBottom': '15px', 'width': '100%'}
                             )
                         ], style={'width': '300px', 'marginBottom': '20px'}),  # Increased bottom margin

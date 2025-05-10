@@ -61,7 +61,7 @@ class GooDataLoader:
         Returns:
             DataFrame containing cell data
         """
-        logger.warning(f"Loading data for frame {frame}")
+        # logger.warning(f"Loading data for frame {frame}")
         
         try:
             frame_group = self._file[frame]
